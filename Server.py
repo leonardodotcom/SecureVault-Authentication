@@ -38,6 +38,7 @@ class Server:
         self.host = host
         self.port = port
         
+
     def encrypt(self, key, plaintext):
         iv = b'\x00' * 16  # Initialization vector di lunghezza 16 byte
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
@@ -49,7 +50,6 @@ class Server:
         # Esegui la crittografia
         ciphertext = encryptor.update(padded_message) + encryptor.finalize()
         return ciphertext
-
     
     def decrypt(self, key, ciphertext):
         # Inizializza il cifrario AES con CBC mode
@@ -63,6 +63,7 @@ class Server:
         unpadder = padding.PKCS7(128).unpadder()
         message = unpadder.update(padded_message) + unpadder.finalize()
         return message
+
 
     def start_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -89,7 +90,7 @@ class Server:
                 # Check if Device's Unique Identifier is valid
                 if (len(device_uid) == 32):
                     # Generation of random number r1 and challenge c1
-                    r1 = random.getrandbits(32)
+                    self.r1 = random.getrandbits(32)
 
                     # Generation of challenge C1
                     for i in range(self.p):
@@ -97,9 +98,9 @@ class Server:
                         if index not in self.c1:
                             self.c1.append(index)
 
-                    print("Server sent:\nR1:", r1, "\nC1", self.c1)
+                    print("Server sent:\nR1:", self.r1, "\nC1", self.c1)
                     
-                    M2 = json.dumps({'c1': self.c1, 'r1': r1}).encode()
+                    M2 = json.dumps({'c1': self.c1, 'r1': self.r1}).encode()
                     conn.sendall(M2)
 
                     # Generation of key K1
@@ -108,19 +109,41 @@ class Server:
                         self.k1 ^= int(self.sv[int(self.c1[i])], 2)
 
                     print("K1:", self.k1)
-
-                    print("--- Server: RECEIVED CHALLENGE C2 -----------------------------------------\n")
+                    print("\n--- Server: RECEIVED CHALLENGE C2 -----------------------------------------\n")
+                    
                     data = self.decrypt(self.k1.to_bytes(16, byteorder='big'), conn.recv(2048))
                     decoded_data = json.loads(data.decode())  # Decode JSON 
 
+                    rt1 = None
                     if 'rt1' in decoded_data and 'c2' in decoded_data and 'r2' in decoded_data:
                         rt1 = decoded_data['rt1']
                         self.c2 = decoded_data['c2']
                         self.r2 = decoded_data['r2']
 
-                        print("Random concatenated RT1:", rt1)
+                        print("Concatenated RT1:", rt1)
                         print("Challenge C2:", self.c2)
                         print("Random int R2:", self.r2)
+
+                    if str(self.r1) in rt1:
+                        print("\n\nGenerating M4\n")
+                        skip = len(str(self.r1))
+                        self.t1 = rt1[skip:]
+                        self.t2 = bin(random.getrandbits(32))[2:].zfill(32)
+
+                        # Generation of key K2
+                        self.k2 = int(self.sv[int(self.c2[0])], 2)
+                        for i in range(1, len(self.c2)):
+                            self.k2 ^= int(self.sv[int(self.c2[i])], 2)
+                        print("K2:", self.k2)
+                        self.k2 ^= int(self.t1, 2)
+
+                        rt2 = str(self.r2) + str(self.t2)
+
+                        M4 = json.dumps({'rt2': rt2}).encode()
+                        M4_enc = self.encrypt(self.k2.to_bytes(16, byteorder='big'), M4)
+                        print("M4 (not encrypted): ", M4)
+                        print("M4 encripted:", M4_enc)
+                        conn.sendall(M4_enc)
 
                     print("\n\n---------- RETURNED PROPERLY ----------\n\n")                    
 

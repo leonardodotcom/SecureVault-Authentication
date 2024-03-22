@@ -92,7 +92,7 @@ class Device:
 
             print("----------------------------------------------------------------\nGeneration of random T1 and key K1\n")
             # Generation of random T1 and key K1
-            self.t1 = random.getrandbits(32)
+            self.t1 = bin(random.getrandbits(32))[2:].zfill(32)
             
             self.k1 = int(self.sv[int(self.c1[0])], 2)
             for i in range(1, len(self.c1)):
@@ -106,16 +106,18 @@ class Device:
 
             # Generation of random R2
             self.r2 = random.getrandbits(32)
-            rt1 = str(self.r1) + str(self.t1)
-
             print("Device generated:\nK1:", self.k1, "\nC2:", self.c2, "\nR2:", self.r2, "\nT1:", self.t1)
 
+            rt1 = str(self.r1) + str(self.t1)
+            
             M3 = json.dumps({'rt1': rt1, 'c2': self.c2, 'r2': self.r2}).encode()
             M3_enc = self.encrypt(self.k1.to_bytes(16, byteorder='big'), M3)
             print("M3 (not encrypted): ", M3)
             print("M3 encripted:", M3_enc)
             s.sendall(M3_enc)
 
+            data = s.recv(2048)
+            print("M4:", data)
             print("\n---------- RETURNED PROPERLY ----------\n\n")
 
 if __name__ == "__main__":
