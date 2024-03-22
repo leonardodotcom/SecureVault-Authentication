@@ -2,28 +2,34 @@ import socket
 import random
 import json
 
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+
 class Device:
-    N = 32              # Size of the Secure Vault (numbers of keys)
-    M = 32              # Dimension (in bit) of keys
+    N = 8              # Size of the Secure Vault (numbers of keys)
+    M = 128            # Dimension (in bit) of keys
     
-    # Secure Vault of N = 32, M = 32
-    sv = ["00010100010001001101100100000110","11101111101010110100100001000001","11100011111000101111000101001001", 
-          "10110111010010101110111100111010","01001000111101011101101101001001","11100100000000110001010010011011",
-          "11010001100010000010110000101000","10001101100001010111111001100011","00000100101001110000100110000111",
-          "01101011101101100001100110100000","01101110010000000100010100101100","11111110011011011010101110100100",
-          "01100110101111000101001001011011","11100111001000110110000000000001","11011110100100000010100010111111",
-          "01011111001110100011010001101101","01011111111011011101101010111100","11100111111100100000111100000010",
-          "10100101010101010011111100011011","00001010101001101010001110101101","01110000010110110010110110111011",
-          "01010110001000000110000111011001","11000110100001101100101011110000","01011011000011110100010110111001",
-          "00111001111011001101100011110100","00100010110110000100001010011010","01111000011001100000111110010001",
-          "01110110110001100011000100101110","00000001011111111000000101101000","11101101001111100001011011101011",
-          "10100111010010000111010010011011","01000011011101000011001110000101"]          
+    # Secure Vault
+    sv = ["00100011000100110101001011100111010101110100101111010010001010011111110010010000000100000110001100001000101010010010000101010000",
+            "11011010000110010101111100001100101010000100100000011010011000011101001011010110101011110110010001100000000100110100110100101000",
+            "01000000100101100000110010001010111110010001010110101011111001100001011101000111010110000101100010011101011111010101111000010100",
+            "11111001101101110000001010111011011111001001110101011111001111101010011100011011101011010000010100110001110110100001010011011110",
+            "11110011000000110011010011001110111000001001001111101110001110011101000111110111000110110101010111010001000110100000011100001011",
+            "10111100000011011001001011010101001010001011111110100000110010011100011011010101000001100010110011111101111000011000010010111011",
+            "00010001011011111000110000101001011010000101010001100001101000010010000110101011110101111000100000000010111100011111011010001000",
+            "01001001100111101001011111110000010100000100001010001100100001010001111111111000111101110111011011011100101110110001110000111111"]
 
     uid = None          # Device Unique Identifier
     session = None      # Session ID
 
     c1 = []             # Challenge C1
     c2 = []             # Challenge C2
+
+    p = None
+
+    t1 = None
+    t2 = None
 
     r1 = None           # Random R1
     r2 = None           # Random R2
@@ -34,56 +40,83 @@ class Device:
         self.host = host
         self.port = port
 
+    def encrypt(self, key, plaintext):
+        iv = b'\x00' * 16  # Initialization vector di lunghezza 16 byte
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        # Inizializza l'encryptor
+        encryptor = cipher.encryptor()
+        # Applica il padding al messaggio
+        padder = padding.PKCS7(128).padder()
+        padded_message = padder.update(plaintext) + padder.finalize()
+        # Esegui la crittografia
+        ciphertext = encryptor.update(padded_message) + encryptor.finalize()
+        return ciphertext
+
+    
+    def decrypt(self, key, ciphertext):
+        # Inizializza il cifrario AES con CBC mode
+        iv = b'\x00' * 16  # Initialization vector di lunghezza 16 byte
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        # Inizializza il decryptor
+        decryptor = cipher.decryptor()
+        # Esegui la decrittografia
+        padded_message = decryptor.update(ciphertext) + decryptor.finalize()
+        # Rimuovi il padding dal messaggio decrittato
+        unpadder = padding.PKCS7(128).unpadder()
+        message = unpadder.update(padded_message) + unpadder.finalize()
+        return message
+
     def authentication_request(self):
-        self.uid = random.getrandbits(32)
+        self.uid = bin(random.getrandbits(32))[2:].zfill(32)
         self.session = random.getrandbits(32)
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             # Request sent to the authentication server with message M1 containing
             # the ID of the device and the id of the session
             s.connect((self.host, self.port))
-            M1 = self.uid.to_bytes(4, byteorder='big') + self.session.to_bytes(4, byteorder='big')
+            M1 = json.dumps({'uid': self.uid, 'session': self.session}).encode()
             s.sendall(M1)
 
-            print("--- Device: RECEIVED CHALLENGE C1 --------------------------------------------\n")
-            # Receive Challenge C1 and random number R1 from Server
+            print("\n\n--- DEVICE: Received challenge C1 --------------------------------------------\n")
+            # Challenge C1 and random number R1 from Server
             data = s.recv(2048)
-            decoded_data = json.loads(data.decode())  # Decodifica il JSON ricevuto
+            decoded_data = json.loads(data.decode())  # JSON decode
+
             if 'c1' in decoded_data and 'r1' in decoded_data:
                 self.c1 = decoded_data['c1']
                 self.r1 = decoded_data['r1']
-
                 print("Challenge C1:", self.c1)
                 print("Random int R1:", self.r1)
 
-            print("Generation of random T1 and key K1")
+            self.p = len(self.c1)
+
+            print("----------------------------------------------------------------\nGeneration of random T1 and key K1\n")
             # Generation of random T1 and key K1
-            t1 = random.getrandbits(32)
-
-            self.k1 = int(self.sv[int(self.c1[0])])
-            self.c1 = self.c1.split()
-            for i in range(1, len(self.c1)):
-                self.k1 ^= int(self.sv[int(self.c1[0])])
-
-            print("T1:", t1, "\nK1:", self.k1, "Length:", len(str(self.k1)))
+            self.t1 = random.getrandbits(32)
             
-            print("Generation of challenge C2, concatenation of R1 and T1, random number R2")
-            # Generation of Challenge C2
-            str_c2 = ""
-            for i in range(len(self.c1)):
+            self.k1 = int(self.sv[int(self.c1[0])], 2)
+            for i in range(1, len(self.c1)):
+                self.k1 ^= int(self.sv[int(self.c1[i])], 2)
+
+            # Generation of challenge C2
+            for i in range(self.p):
                 index = random.randint(0, self.N - 1)
                 if index not in self.c2:
                     self.c2.append(index)
-                    str_c2 += str(index) + " "
 
-            rt1 = str(self.r1) + str(t1)
-            r2 = random.getrandbits(32)
+            # Generation of random R2
+            self.r2 = random.getrandbits(32)
+            rt1 = str(self.r1) + str(self.t1)
 
-            print("C2:", str_c2, "\nR1:", self.r1, "\nRT1:", rt1, "\nR2:", r2)
+            print("Device generated:\nK1:", self.k1, "\nC2:", self.c2, "\nR2:", self.r2, "\nT1:", self.t1)
 
-            M3 = json.dumps({'rt1': rt1, 'c2': str_c2, 'r2': r2}).encode()
-            s.sendall(M3)
+            M3 = json.dumps({'rt1': rt1, 'c2': self.c2, 'r2': self.r2}).encode()
+            M3_enc = self.encrypt(self.k1.to_bytes(16, byteorder='big'), M3)
+            print("M3 (not encrypted): ", M3)
+            print("M3 encripted:", M3_enc)
+            s.sendall(M3_enc)
 
+            print("\n---------- RETURNED PROPERLY ----------\n\n")
 
 if __name__ == "__main__":
     # Device configuration
