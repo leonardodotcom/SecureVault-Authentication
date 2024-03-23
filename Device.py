@@ -92,7 +92,7 @@ class Device:
 
             print("----------------------------------------------------------------\nGeneration of random T1 and key K1\n")
             # Generation of random T1 and key K1
-            self.t1 = bin(random.getrandbits(32))[2:].zfill(32)
+            self.t1 = bin(random.getrandbits(self.M))[2:].zfill(self.M)
             
             self.k1 = int(self.sv[int(self.c1[0])], 2)
             for i in range(1, len(self.c1)):
@@ -116,9 +116,33 @@ class Device:
             print("M3 encripted:", M3_enc)
             s.sendall(M3_enc)
 
-            data = s.recv(2048)
-            print("M4:", data)
-            print("\n---------- RETURNED PROPERLY ----------\n\n")
+            rt2 = None
+
+            # Generation of key K2
+            self.k2 = int(self.sv[int(self.c2[0])], 2)
+            for i in range(1, len(self.c2)):
+                self.k2 ^= int(self.sv[int(self.c2[i])], 2)
+            print("K2:", self.k2)
+            self.k2 ^= int(self.t1, 2)
+
+            data = self.decrypt(self.k2.to_bytes(16, byteorder='big'), s.recv(2048))
+            decoded_data = json.loads(data.decode())  # Decode JSON 
+
+            if 'rt2' in decoded_data:
+                rt2 = decoded_data['rt2']
+                print("Concatenated RT2:", rt2)
+
+            if str(self.r2) in rt2:
+                print("\nServer verified by retrieving R2, generating final key T\n")
+                skip = len(str(self.r2))
+                self.t2 = rt2[skip:]
+
+                converted_t1 = int(self.t1, 2)
+                converted_t2 = int(self.t2, 2)
+
+                self.t = bin(converted_t1 ^ converted_t2)[2:].zfill(128)
+                print("\nFINAL KEY T:", int(self.t, 2), "of length", len((self.t)), "bit")
+
 
 if __name__ == "__main__":
     # Device configuration

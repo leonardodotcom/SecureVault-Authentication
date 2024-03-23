@@ -128,7 +128,7 @@ class Server:
                         print("\n\nGenerating M4\n")
                         skip = len(str(self.r1))
                         self.t1 = rt1[skip:]
-                        self.t2 = bin(random.getrandbits(32))[2:].zfill(32)
+                        self.t2 = bin(random.getrandbits(self.M))[2:].zfill(self.M)
 
                         # Generation of key K2
                         self.k2 = int(self.sv[int(self.c2[0])], 2)
@@ -145,7 +145,11 @@ class Server:
                         print("M4 encripted:", M4_enc)
                         conn.sendall(M4_enc)
 
-                    print("\n\n---------- RETURNED PROPERLY ----------\n\n")                    
+                        converted_t1 = int(self.t1, 2)
+                        converted_t2 = int(self.t2, 2)
+
+                        self.t = bin(converted_t1 ^ converted_t2)[2:].zfill(128)
+                        print("\nFINAL KEY T:", int(self.t, 2), "of length", len((self.t)), "bit")
 
 if __name__ == "__main__":
     # Device configuration
