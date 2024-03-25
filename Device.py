@@ -2,6 +2,9 @@ import socket
 import random
 import json
 
+import hmac
+import hashlib
+
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
@@ -19,6 +22,8 @@ class Device:
             "10111100000011011001001011010101001010001011111110100000110010011100011011010101000001100010110011111101111000011000010010111011",
             "00010001011011111000110000101001011010000101010001100001101000010010000110101011110101111000100000000010111100011111011010001000",
             "01001001100111101001011111110000010100000100001010001100100001010001111111111000111101110111011011011100101110110001110000111111"]
+    
+    session_data = None
 
     uid = None          # Device Unique Identifier
     session = None      # Session ID
@@ -40,6 +45,14 @@ class Device:
         self.host = host
         self.port = port
 
+    def update_sv(self, data_exchanged):
+        secure_vault_bytes = ''.join(self.sv).encode('utf-8')
+        hash = hashlib.sha256(data_exchanged + secure_vault_bytes).hexdigest()
+        print("HMAC:", hash)
+
+        updated_secure_vault = {f'Key{i}': hash_value for i, hash_value in enumerate(hash)}
+        return updated_secure_vault
+
     def encrypt(self, key, plaintext):
         iv = b'\x00' * 16  # Initialization vector di lunghezza 16 byte
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
@@ -51,7 +64,6 @@ class Device:
         # Esegui la crittografia
         ciphertext = encryptor.update(padded_message) + encryptor.finalize()
         return ciphertext
-
     
     def decrypt(self, key, ciphertext):
         # Inizializza il cifrario AES con CBC mode
@@ -68,6 +80,7 @@ class Device:
 
     def authentication_request(self):
         self.uid = bin(random.getrandbits(32))[2:].zfill(32)
+        print(self.uid)
         self.session = random.getrandbits(32)
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -77,7 +90,11 @@ class Device:
             M1 = json.dumps({'uid': self.uid, 'session': self.session}).encode()
             s.sendall(M1)
 
-            print("\n\n--- DEVICE: Received challenge C1 --------------------------------------------\n")
+            session_data = self.uid + bin(self.session)[2:]
+
+#-------------------------------------------------------------------------------------------
+
+            print("DEVICE: Received challenge C1 and R1")
             # Challenge C1 and random number R1 from Server
             data = s.recv(2048)
             decoded_data = json.loads(data.decode())  # JSON decode
@@ -85,55 +102,63 @@ class Device:
             if 'c1' in decoded_data and 'r1' in decoded_data:
                 self.c1 = decoded_data['c1']
                 self.r1 = decoded_data['r1']
+
                 print("Challenge C1:", self.c1)
-                print("Random int R1:", self.r1)
+                print("Random integer R1:", self.r1)
 
-            self.p = len(self.c1)
+                # Encoding of elements of C1 and R1
+                for num in self.c1:
+                    session_data += bin(num)[2:]
+                session_data += bin(self.r1)[2:]
 
-            print("----------------------------------------------------------------\nGeneration of random T1 and key K1\n")
-            # Generation of random T1 and key K1
+            # Generation of random T1
             self.t1 = bin(random.getrandbits(self.M))[2:].zfill(self.M)
-            
+            # Generation of key K1
             self.k1 = int(self.sv[int(self.c1[0])], 2)
             for i in range(1, len(self.c1)):
                 self.k1 ^= int(self.sv[int(self.c1[i])], 2)
-
             # Generation of challenge C2
-            for i in range(self.p):
+            for i in range(len(self.c1)):
                 index = random.randint(0, self.N - 1)
                 if index not in self.c2:
                     self.c2.append(index)
-
             # Generation of random R2
             self.r2 = random.getrandbits(32)
-            print("Device generated:\nK1:", self.k1, "\nC2:", self.c2, "\nR2:", self.r2, "\nT1:", self.t1)
-
+            # Concatenation of R1 and T1
             rt1 = str(self.r1) + str(self.t1)
             
             M3 = json.dumps({'rt1': rt1, 'c2': self.c2, 'r2': self.r2}).encode()
             M3_enc = self.encrypt(self.k1.to_bytes(16, byteorder='big'), M3)
-            print("M3 (not encrypted): ", M3)
-            print("M3 encripted:", M3_enc)
             s.sendall(M3_enc)
+            
+            # Encoding of elements of RT1, C2 and R2
+            session_data += bin(self.r1)[2:] + self.t1
+            for num in self.c2:
+                session_data += bin(num)[2:]
+            session_data += bin(self.r2)[2:]
 
-            rt2 = None
-
+            print("Parameter:\n- K1:", self.k1, "\n- C2:", self.c2, "\n- R2:", self.r2, "\n- T1:", self.t1)
+            print("M3 [not encrypted]: ", M3)
+            print("M3 [encripted]:", M3_enc)
+            
+#-------------------------------------------------------------------------------------------
+            
             # Generation of key K2
             self.k2 = int(self.sv[int(self.c2[0])], 2)
             for i in range(1, len(self.c2)):
                 self.k2 ^= int(self.sv[int(self.c2[i])], 2)
-            print("K2:", self.k2)
             self.k2 ^= int(self.t1, 2)
+
+#-------------------------------------------------------------------------------------------
 
             data = self.decrypt(self.k2.to_bytes(16, byteorder='big'), s.recv(2048))
             decoded_data = json.loads(data.decode())  # Decode JSON 
-
+            rt2 = None
             if 'rt2' in decoded_data:
                 rt2 = decoded_data['rt2']
-                print("Concatenated RT2:", rt2)
 
             if str(self.r2) in rt2:
-                print("\nServer verified by retrieving R2, generating final key T\n")
+                print("\Device verified by retrieving R2, generating final key T\n")
                 skip = len(str(self.r2))
                 self.t2 = rt2[skip:]
 
@@ -141,13 +166,19 @@ class Device:
                 converted_t2 = int(self.t2, 2)
 
                 self.t = bin(converted_t1 ^ converted_t2)[2:].zfill(128)
-                print("\nFINAL KEY T:", int(self.t, 2), "of length", len((self.t)), "bit")
+                print("\nFINAL KEY T:", int(self.t, 2), "of length", len((self.t)), "bit")      
 
+                session_data += bin(self.r2)[2:] + self.t2
+
+            print("Session data:", session_data.encode('utf-8'))
+            self.sv = self.update_sv(bytes(session_data.encode('utf-8')))
+
+            print("The update secure vault is:\n", self.sv)
 
 if __name__ == "__main__":
     # Device configuration
     device_host = 'localhost'
     device_port = 12345
     device = Device(device_host, device_port)
-
+    # Initialize request of authentication to the server
     device.authentication_request()

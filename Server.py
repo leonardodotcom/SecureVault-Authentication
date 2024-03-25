@@ -3,6 +3,9 @@ import random
 import sys
 import json
 
+import hmac
+import hashlib
+
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
@@ -38,6 +41,13 @@ class Server:
         self.host = host
         self.port = port
         
+    def update_sv(self, data_exchanged):
+        secure_vault_bytes = ''.join(self.sv).encode('utf-8')
+        hash = hashlib.sha256(data_exchanged + secure_vault_bytes).hexdigest()
+        print("HMAC:", hash)
+
+        updated_secure_vault = {f'Key{i}': hash_value for i, hash_value in enumerate(hash)}
+        return updated_secure_vault
 
     def encrypt(self, key, plaintext):
         iv = b'\x00' * 16  # Initialization vector di lunghezza 16 byte
@@ -67,10 +77,12 @@ class Server:
 
     def start_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            # Socket server initialization 
+            # Socket server initialization
             s.bind((self.host, self.port))
             s.listen()
             print("\n\nWaiting for Connections...\n")
+            
+            session_data = None
             
             conn, addr = s.accept()
             with conn:
@@ -80,8 +92,10 @@ class Server:
                 decoded_data = json.loads(data.decode())  # JSON Decoding
                 # Retrieve UID of Device and Session ID
                 if 'uid' in decoded_data and 'session' in decoded_data:
-                    device_uid = decoded_data['uid'].encode('utf-8')
+                    device_uid = decoded_data['uid']
                     session = decoded_data['session']
+
+                    session_data = device_uid + bin(session)[2:]
                 
                 print("Device", device_uid, "is connected with session ID:", session, "\n")
 
@@ -102,6 +116,10 @@ class Server:
                     
                     M2 = json.dumps({'c1': self.c1, 'r1': self.r1}).encode()
                     conn.sendall(M2)
+
+                    for num in self.c1:
+                        session_data += bin(num)[2:]
+                    session_data += bin(self.r1)[2:]
 
                     # Generation of key K1
                     self.k1 = int(self.sv[int(self.c1[0])], 2)
@@ -129,7 +147,6 @@ class Server:
                         skip = len(str(self.r1))
                         self.t1 = rt1[skip:]
                         self.t2 = bin(random.getrandbits(self.M))[2:].zfill(self.M)
-
                         # Generation of key K2
                         self.k2 = int(self.sv[int(self.c2[0])], 2)
                         for i in range(1, len(self.c2)):
@@ -137,7 +154,13 @@ class Server:
                         print("K2:", self.k2)
                         self.k2 ^= int(self.t1, 2)
 
+                        session_data += bin(self.r1)[2:] + self.t1
+                        for num in self.c2:
+                            session_data += bin(num)[2:]
+                        session_data += bin(self.r2)[2:]
+
                         rt2 = str(self.r2) + str(self.t2)
+                        session_data += bin(self.r2)[2:] + self.t2
 
                         M4 = json.dumps({'rt2': rt2}).encode()
                         M4_enc = self.encrypt(self.k2.to_bytes(16, byteorder='big'), M4)
@@ -150,6 +173,11 @@ class Server:
 
                         self.t = bin(converted_t1 ^ converted_t2)[2:].zfill(128)
                         print("\nFINAL KEY T:", int(self.t, 2), "of length", len((self.t)), "bit")
+            
+            print("Session data:", session_data.encode('utf-8'))
+            self.sv = self.update_sv(bytes(session_data.encode('utf-8')))
+
+            print("The update secure vault is:\n", self.sv)
 
 if __name__ == "__main__":
     # Device configuration
