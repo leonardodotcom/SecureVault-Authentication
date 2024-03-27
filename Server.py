@@ -26,16 +26,16 @@ class Server:
 
     p = random.randint(3, N-1)
 
-    c1 = []
-    c2 = []
+    c1 = []                 # Challenge C1
+    c2 = []                 # Challenge C2
 
-    r1 = None
-    r2 = None
+    t1 = None               # Temporary key T1
+    t2 = None               # Temporary key T2
 
-    t1 = None
-    t2 = None
+    r1 = None               # Random number R1
+    r2 = None               # Random number R2
 
-    k1 = None
+    k1 = None               # Temporary key K1
 
     def __init__(self, host, port):
         self.host = host
@@ -43,83 +43,99 @@ class Server:
         
     def update_sv(self, data_exchanged):
         secure_vault_bytes = ''.join(self.sv).encode('utf-8')
-        hash = hashlib.sha256(data_exchanged + secure_vault_bytes).hexdigest()
-        print("HMAC:", hash)
+        hash = int.from_bytes(bytes.fromhex(hashlib.md5(data_exchanged + secure_vault_bytes).hexdigest()), byteorder='big')
+        hash_length = len(bin(hash)[2:].zfill(self.M))
 
-        updated_secure_vault = {f'Key{i}': hash_value for i, hash_value in enumerate(hash)}
-        return updated_secure_vault
+        sv_to_string = ""
+        for i in range(len(self.sv)):
+            sv_to_string += self.sv[i]
+
+        r = len(sv_to_string) % hash_length
+        if r != 0:
+            padding_length = (hash_length - r) % hash_length
+            sv_to_string = sv_to_string + '0' * padding_length 
+
+        cursor = 0
+        self.sv = ""
+        for i in range(len(sv_to_string) // hash_length):
+            partition = hash ^ int(sv_to_string[cursor:cursor + hash_length], 2)
+            self.sv += bin(partition)[2:].zfill(128)
+            cursor += hash_length
+        self.sv = [self.sv[i:i+128] for i in range(0, len(self.sv), 128)]
 
     def encrypt(self, key, plaintext):
-        iv = b'\x00' * 16  # Initialization vector di lunghezza 16 byte
+        # Initialization vector and AES cipher
+        iv = b'\x00' * 16  
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-        # Inizializza l'encryptor
+        # Initialize the encryptor
         encryptor = cipher.encryptor()
-        # Applica il padding al messaggio
+        # Apply padding to the message
         padder = padding.PKCS7(128).padder()
         padded_message = padder.update(plaintext) + padder.finalize()
-        # Esegui la crittografia
+        # Execute cryptography
         ciphertext = encryptor.update(padded_message) + encryptor.finalize()
         return ciphertext
     
     def decrypt(self, key, ciphertext):
-        # Inizializza il cifrario AES con CBC mode
-        iv = b'\x00' * 16  # Initialization vector di lunghezza 16 byte
+        # Initialization vector and the AES cipher
+        iv = b'\x00' * 16
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-        # Inizializza il decryptor
+        # Initialize the decryptor
         decryptor = cipher.decryptor()
-        # Esegui la decrittografia
+        # Execute decryption
         padded_message = decryptor.update(ciphertext) + decryptor.finalize()
-        # Rimuovi il padding dal messaggio decrittato
+        # Remove padding
         unpadder = padding.PKCS7(128).unpadder()
         message = unpadder.update(padded_message) + unpadder.finalize()
         return message
-
 
     def start_server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             # Socket server initialization
             s.bind((self.host, self.port))
             s.listen()
-            print("\n\nWaiting for Connections...\n")
+            print("\nWaiting for Connections...\n")
             
             session_data = None
             
             conn, addr = s.accept()
             with conn:
-                print("\n--- SERVER: Connection Received -----------------------------------------------")
-                # Server receives authentication request from device
+                # Receiving of message M1 from Device
                 data = conn.recv(2048)
                 decoded_data = json.loads(data.decode())  # JSON Decoding
                 # Retrieve UID of Device and Session ID
                 if 'uid' in decoded_data and 'session' in decoded_data:
                     device_uid = decoded_data['uid']
                     session = decoded_data['session']
-
+                    # Storing the exchanged data
                     session_data = device_uid + bin(session)[2:]
-                
-                print("Device", device_uid, "is connected with session ID:", session, "\n")
+                    
+                    print("SERVER: Connection Received from Devic", device_uid, "with messager M1 and Session ID", session)
 
-                #----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
                 
                 # Check if Device's Unique Identifier is valid
                 if (len(device_uid) == 32):
-                    # Generation of random number r1 and challenge c1
+                    # Generation of random number R1
                     self.r1 = random.getrandbits(32)
-
                     # Generation of challenge C1
                     for i in range(self.p):
                         index = random.randint(0, self.N - 1)
                         if index not in self.c1:
                             self.c1.append(index)
-
-                    print("Server sent:\nR1:", self.r1, "\nC1", self.c1)
-                    
+                    # Sending to the server the message M2 composed of:
+                    # challenge C1 and random number R1
                     M2 = json.dumps({'c1': self.c1, 'r1': self.r1}).encode()
                     conn.sendall(M2)
 
+                    print("Server sent M2 composed of:\n- R1:", self.r1, "\n- C1", self.c1)
+
+                    # Storing the exchanged data
                     for num in self.c1:
                         session_data += bin(num)[2:]
                     session_data += bin(self.r1)[2:]
+
+#----------------------------------------------------------------------------------------
 
                     # Generation of key K1
                     self.k1 = int(self.sv[int(self.c1[0])], 2)
@@ -127,8 +143,11 @@ class Server:
                         self.k1 ^= int(self.sv[int(self.c1[i])], 2)
 
                     print("K1:", self.k1)
-                    print("\n--- Server: RECEIVED CHALLENGE C2 -----------------------------------------\n")
+                    print("\nServer: RECEIVED CHALLENGE C2\n")
                     
+#----------------------------------------------------------------------------------------        
+
+                    # Receiving of message M3 from Device
                     data = self.decrypt(self.k1.to_bytes(16, byteorder='big'), conn.recv(2048))
                     decoded_data = json.loads(data.decode())  # Decode JSON 
 
@@ -147,19 +166,21 @@ class Server:
                         skip = len(str(self.r1))
                         self.t1 = rt1[skip:]
                         self.t2 = bin(random.getrandbits(self.M))[2:].zfill(self.M)
+                        
                         # Generation of key K2
                         self.k2 = int(self.sv[int(self.c2[0])], 2)
                         for i in range(1, len(self.c2)):
                             self.k2 ^= int(self.sv[int(self.c2[i])], 2)
                         print("K2:", self.k2)
                         self.k2 ^= int(self.t1, 2)
+                        # Concatenation of R2 and T2
+                        rt2 = str(self.r2) + str(self.t2)
 
+                        # Storing the exchanged data
                         session_data += bin(self.r1)[2:] + self.t1
                         for num in self.c2:
                             session_data += bin(num)[2:]
                         session_data += bin(self.r2)[2:]
-
-                        rt2 = str(self.r2) + str(self.t2)
                         session_data += bin(self.r2)[2:] + self.t2
 
                         M4 = json.dumps({'rt2': rt2}).encode()
@@ -168,19 +189,20 @@ class Server:
                         print("M4 encripted:", M4_enc)
                         conn.sendall(M4_enc)
 
+#----------------------------------------------------------------------------------------
+
+                        # Casting of T1 and T2 to integer to perform XOR operation
                         converted_t1 = int(self.t1, 2)
                         converted_t2 = int(self.t2, 2)
 
                         self.t = bin(converted_t1 ^ converted_t2)[2:].zfill(128)
                         print("\nFINAL KEY T:", int(self.t, 2), "of length", len((self.t)), "bit")
             
-            print("Session data:", session_data.encode('utf-8'))
-            self.sv = self.update_sv(bytes(session_data.encode('utf-8')))
-
-            print("The update secure vault is:\n", self.sv)
+            self.update_sv(bytes(session_data.encode('utf-8')))
+            print("The updated secure vault is:\n", self.sv)
 
 if __name__ == "__main__":
-    # Device configuration
+    # Server configuration
     server_host = 'localhost'
     server_port = 12345
     server = Server(server_host, server_port)
